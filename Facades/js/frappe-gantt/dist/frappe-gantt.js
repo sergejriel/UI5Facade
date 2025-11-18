@@ -1413,7 +1413,8 @@ var Gantt = (function () {
                     upper: { date_format: '',     date_format_at_border: 'yyyy', interval: 'Year' },
                     lower: { date_format: 'yyyy', date_format_at_border: 'yyyy', interval: 'Year' }
                   }
-                }
+                },
+              // row_backgrounds: [], //TODO SR Info: Background color
               
             };
             
@@ -1518,6 +1519,10 @@ var Gantt = (function () {
             this.compute_rows_and_lanes();
             this.compute_overlap_aggregates();
             this.relayout_visible_rows();
+
+          //TODO SR Info: Background color
+/*          // 🔹 NEU: Hintergrundblöcke auf Basis der aktuellen Rows vorbereiten
+          this.setup_row_backgrounds();*/
         }
 
         setup_dependencies() {
@@ -1532,6 +1537,9 @@ var Gantt = (function () {
 
         refresh(tasks) {
             this.setup_tasks(tasks);
+          //TODO SR Info: Background color
+/*          // row_backgrounds hängen an der aktuellen Row-Struktur
+          this.setup_row_backgrounds();*/
             this.change_view_mode();
         }
 
@@ -1745,8 +1753,81 @@ var Gantt = (function () {
             });
           });
         }
+        
+//TODO SR Info: Background color, take this make_grid_rows() function instead.
+      
+/*      make_grid_rows() {
+        const rows_layer  = createSVG('g', { append_to: this.layers.grid });
+        const bg_layer    = createSVG('g', { append_to: this.layers.grid }); // 🔹 NEU
+        const lines_layer = createSVG('g', { append_to: this.layers.grid });
 
-        make_grid_header() {
+        const row_width  = this.dates.length * this.options.column_width;
+
+        this._rowMeta.forEach(r => {
+          const row_y = this.options.header_height + this.options.padding + r.top;
+          const row_h = this.options.row_height;
+
+          createSVG('rect', {
+            x: 0, y: row_y,
+            width: row_width, height: row_h,
+            class: 'grid-row',
+            append_to: rows_layer,
+          });
+        });
+
+        // 🔹 NEU: farbige Hintergrundblöcke pro Zeile
+        this.make_row_background_blocks(bg_layer);
+
+        // Linien über allem im Grid zeichnen
+        this._rowMeta.forEach(r => {
+          const row_y = this.options.header_height + this.options.padding + r.top;
+          const row_h = this.options.row_height;
+
+          createSVG('line', {
+            x1: 0, y1: row_y + row_h,
+            x2: row_width, y2: row_y + row_h,
+            class: 'row-line',
+            append_to: lines_layer,
+          });
+        });
+      }
+
+      make_row_background_blocks(layer) {
+        if (!this._rowBackgrounds || !this._rowBackgrounds.length) return;
+
+        const header_offset = this.options.header_height + this.options.padding;
+        const row_height = this.options.row_height;
+
+        this._rowBackgrounds.forEach(bg => {
+          const rm = this._rowMeta[bg.rowIndex];
+          if (!rm) return;
+
+          const y = header_offset + rm.top;
+          const h = row_height;
+
+          const x1 = this.get_x_by_date(bg._start);
+          const x2 = this.get_x_by_date(bg._end);
+          const x  = Math.min(x1, x2);
+          const w  = Math.abs(x2 - x1);
+
+          if (w <= 0) return;
+
+          const rect = createSVG('rect', {
+            x,
+            y,
+            width: w,
+            height: h,
+            class: 'row-bg-block' + (bg.className ? (' ' + bg.className) : ''),
+            append_to: layer,
+          });
+
+          if (bg.color) {
+            rect.setAttribute('fill', bg.color);
+          }
+        });
+      }*/
+
+      make_grid_header() {
             const header_width = this.dates.length * this.options.column_width;
             const header_height = this.options.header_height + 10;
             createSVG('rect', {
@@ -2467,6 +2548,22 @@ var Gantt = (function () {
             }
             return position;
         }
+        //TODO SR Info: Background color
+      
+/*      get_x_by_date(date) {
+        const { step, column_width } = this.options;
+        const gantt_start = this.gantt_start;
+
+        if (!date || !gantt_start) return 0;
+
+        if (this.view_is(VIEW_MODE.MONTH)) {
+          const diff_days = date_utils.diff(date, gantt_start, 'day');
+          return (diff_days * column_width) / 30;
+        }
+
+        const diff_hours = date_utils.diff(date, gantt_start, 'hour');
+        return (diff_hours / step) * column_width;
+      }*/
 
         unselect_all() {
             [...this.$svg.querySelectorAll('.bar-wrapper')].forEach((el) => {
@@ -2889,6 +2986,69 @@ var Gantt = (function () {
             });
           });
         }
+
+      //TODO SR Info: Background color
+        
+/*      setup_row_backgrounds() {
+        const cfgList = this.options.row_backgrounds || [];
+        const rowMeta = this._rowMeta || [];
+
+        // Map: rowKey -> rowIndex
+        const rowIndexByKey = new Map();
+        rowMeta.forEach(r => {
+          rowIndexByKey.set(r.key, r.index);
+        });
+
+        const result = [];
+
+        cfgList.forEach((cfg, i) => {
+          if (!cfg) return;
+
+          // Start / End parsen
+          const rawStart = cfg._start || (cfg.start ? date_utils.parse(cfg.start) : null);
+          const rawEnd   = cfg._end   || (cfg.end   ? date_utils.parse(cfg.end)   : null);
+
+          if (!rawStart || !rawEnd) return;
+
+          let _start = rawStart;
+          let _end   = rawEnd;
+
+          // gleiche Logik wie bei Tasks: +24h bei Tag/ Woche/ Monat-Skalen,
+          // damit "2025-10-01"–"2025-10-03" wie bei Tasks den kompletten
+          // letzten Tag mit abdeckt.
+          if (this.options.step >= 24 && (this.options.step % 24) === 0) {
+            _end = date_utils.add(_end, 24, 'hour');
+          }
+
+          // Row-Key bestimmen: lineIndex bevorzugt, sonst rowKey, sonst _rowKey
+          const rowKey =
+              (cfg.lineIndex !== undefined) ? cfg.lineIndex :
+                  (cfg.rowKey    !== undefined) ? cfg.rowKey    :
+                      cfg._rowKey;
+
+          const rowIndex = rowIndexByKey.has(rowKey)
+              ? rowIndexByKey.get(rowKey)
+              : null;
+
+          // Wenn es die Zeile (noch) nicht gibt, ignorieren
+          if (rowIndex == null) return;
+
+          result.push({
+            id: cfg.id || `rb_${i}`,
+            rowKey,
+            rowIndex,
+            start: cfg.start,
+            end: cfg.end,
+            _start,
+            _end,
+            color: cfg.color || null,
+            className: cfg.class || cfg.cssClass || ''
+          });
+        });
+
+        this._rowBackgrounds = result;
+      }*/
+
     }
 
     Gantt.VIEW_MODE = VIEW_MODE;
