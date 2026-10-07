@@ -18,6 +18,7 @@ use exface\Core\Widgets\Parts\ConditionalPropertyConditionGroup;
 use exface\Core\DataTypes\ComparatorDataType;
 use exface\Core\Interfaces\Widgets\iShowSingleAttribute;
 use exface\Core\Interfaces\Widgets\iHaveColumns;
+use exface\Core\Interfaces\Widgets\iHaveColorScale;
 use exface\Core\Exceptions\Facades\FacadeRuntimeError;
 use exface\Core\Widgets\Gantt;
 
@@ -686,8 +687,10 @@ JS;
         popup_aggregate_gantt_width: {$popupAggregateGanttWidth}, // Width in px for the Gantt shown inside aggregation popups. @experimental
         popup_aggregate_style: '{$popupAggregateStyle}', // 'list' | 'table' TODO SR (@experimental)
         popup_aggregate_include_upper_row_tasks: {$popupAggregateIncludeUpperRowTasks}, //TODO SR @experimental: Includes tasks that are in the top lane of the row in the aggregate popup. Set to false to only include tasks inside the aggregation block.
-        popup: {$this->buildJsRenderPopup()},
+         /*popup: {$this->buildJsRenderPopup()},*/
         start_of_week: 'monday', // 'monday' | 'sunday' TODO SR: 'sunday' currentlly dont work properly.
+        popup_include_header: true, //TODO SR: Baue eine Property dafür ein!
+        popup_aggregate_include_header: true, //TODO SR: Baue eine Property dafür ein!
         //
         readonly: !($editableJs),
         //column_width: 30,
@@ -779,8 +782,39 @@ JS;
         $colorResolversJs = $this->buildJsColorResolver($calItem, 'oRow');
         $controller = $this->getController();
         $colorPreference = $this->getFacade()->getConfig()->getOption('WIDGET.OBJECT_STATUS.TEXT_COLOR_PREFERENCE');
+        $taskColumns = [];
+
+        // Build the task columns for the Gantt tasks:
+        foreach ($calItem->getColumns() as $column) {
+            if ($column->isHidden()) {
+                continue;
+            }
+            $caption = $this->escapeString($column->getCaption() ?? $column->getDataColumnName());
+            $columnName = $this->escapeString($column->getDataColumnName());
+            $valueJs = "oRow[{$columnName}]";
+            $formatter = $this->getFacade()->getDataTypeFormatter($column->getDataType());
+            $cellWidget = $column->getCellWidget();
+            if ($cellWidget instanceof iHaveColorScale && $cellWidget->hasColorScale()) {
+                $formatterJs = $formatter->buildJsFormatter('mValue');
+                $colorJs = $this->buildJsColorScaleResolver('mValue', $cellWidget->getColorScale(), $cellWidget->isColorScaleRangeBased());
+                $taskColumns[] = <<<JS
+
+                        {$caption}: (function(mValue) {
+                            var sColor = {$colorJs};
+                            return {
+                                text: {$formatterJs},
+                                color: sColor,
+                                textcolor: sColor ? exfColorTools.pickTextColorForBackgroundColor(sColor, ({$colorPreference} - 0.01)) : null
+                            };
+                        })({$valueJs})
+JS;
+            } else {
+                $taskColumns[] = "{$caption}: { text: {$formatter->buildJsFormatter($valueJs)} }";
+            }
+        }
+        $taskColumnsJs = implode(",\n                                ", $taskColumns);
         
-        if ($calItem->getNestedDataColumn() || $calItem->getColorColumn()) {
+        if ($calItem->getNestedDataColumn() !== null) {
             $nestedDataColName = $this->escapeString($calItem->getNestedDataColumn()->getDataColumnName());
         } else {
             $nestedDataColName = 'null';
@@ -800,13 +834,20 @@ JS;
                     var oRow, sColor;
                     
                     function fnRowToTask(oRow) {
+                        var start = oRow["{$calItem->getStartTimeColumn()->getDataColumnName()}"];
+                        var end = oRow["{$calItem->getEndTimeColumn()->getDataColumnName()}"];
+                        if (!start && !end) return;
+
                         sColor = {$colorResolversJs};
                         sColor = sColor ?? '#b8c2cc'; // Default color.
                         var oTask = {
                             id: oRow['{$widget->getUidColumn()->getDataColumnName()}'],
                             name: oRow['{$calItem->getTitleColumn()->getDataColumnName()}'],
-                            start: oRow["{$calItem->getStartTimeColumn()->getDataColumnName()}"],
-                            end: oRow["{$calItem->getEndTimeColumn()->getDataColumnName()}"],
+                            start: start,
+                            end: end,
+                            columns: {
+                                {$taskColumnsJs}
+                            },
                             progress: 0,
                             dependencies: '',
                             lineIndex: lineIndex,
@@ -821,10 +862,7 @@ JS;
                             oTask.custom_class += ' bar-folder';
                         }
                         
-                        // Exludes tasks with no start and end date.
-                        if (oTask.start || oTask.end) {
-                          aTasks.push(oTask);
-                        }
+                        aTasks.push(oTask);
                     }
                     
                     if (!oCtxt) return;
@@ -898,7 +936,7 @@ JS;
         $widget = $this->getWidget();
         $calItem = $widget->getTasksConfig();
 
-        if ($calItem->getNestedDataColumn() || $calItem->getColorColumn()) {
+        if ($calItem->getNestedDataColumn() !== null) {
             $nestedDataColName = $this->escapeString($calItem->getNestedDataColumn()->getDataColumnName());
         } else {
             $nestedDataColName = 'null';
@@ -1040,23 +1078,9 @@ JS;
     {
         switch (true) {
             case $colorCol = $calItem->getColorColumn();
-                $semanticColors = $this->getFacade()->getSemanticColors();
-                $semanticColorsJs = json_encode(empty($semanticColors) ? new \stdClass() : $semanticColors);
                 if ($calItem->hasColorScale()) {
-                    return <<<JS
-                        (function(oRow){
-                            var value = {$oRowJs}['{$colorCol->getDataColumnName()}']
-                            var sColor = {$this->buildJsScaleResolver('value', $calItem->getColorScale(), $calItem->isColorScaleRangeBased())};
-                            var sCssColor = '';
-                            var oSemanticColors = $semanticColorsJs;
-                            if (sColor.startsWith('~')) {
-                                sCssColor = oSemanticColors[sColor] || '';
-                            } else if (sColor) {
-                                sCssColor = sColor;
-                            }
-                            return sCssColor;
-                        })(oRow)
-JS;
+                    $valueJs = $oRowJs . '[' . $this->escapeString($colorCol->getDataColumnName()) . ']';
+                    return $this->buildJsColorScaleResolver($valueJs, $calItem->getColorScale(), $calItem->isColorScaleRangeBased());
                 } else {
                     return "oRow['{$colorCol->getDataColumnName()}']";
                 }
@@ -1064,6 +1088,36 @@ JS;
                 return $this->escapeString($colorVal);
         }
         return 'null';
+    }
+
+    /**
+     * Resolves a value against a color scale and maps semantic colors to CSS colors.
+     *
+     * @param string $valueJs
+     * @param array $scale
+     * @param bool $rangeBased
+     * @return string
+     */
+    protected function buildJsColorScaleResolver(string $valueJs, array $scale, bool $rangeBased) : string
+    {
+        $emptyColorJs = $this->escapeString($scale[''] ?? '');
+        if ($rangeBased) {
+            unset($scale['']);
+        }
+        $scaleJs = $scale === [] ? $emptyColorJs : $this->buildJsScaleResolver('value', $scale, $rangeBased);
+        $colorJs = $rangeBased
+            ? "(value === null || value === undefined || value === '' ? {$emptyColorJs} : {$scaleJs})"
+            : $scaleJs;
+        $semanticColors = $this->getFacade()->getSemanticColors();
+        $semanticColorsJs = json_encode(empty($semanticColors) ? new \stdClass() : $semanticColors);
+
+        return <<<JS
+            (function(value) {
+                var sColor = {$colorJs};
+                var oSemanticColors = {$semanticColorsJs};
+                return sColor.startsWith('~') ? (oSemanticColors[sColor] || '') : (sColor || '');
+            })({$valueJs})
+            JS;
     }
     
     /**
@@ -1246,7 +1300,6 @@ JS
         $btnGrp->addButton($btnGrp->createButton(new UxonObject([
             'widget_type' => 'MenuButton',
             'icon' => 'calendar',
-            'id' => 'ganttViews',
             'caption' => $initialViewName,
             'buttons' => $buttons
         ])));
